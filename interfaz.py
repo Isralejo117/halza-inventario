@@ -9,7 +9,7 @@ import customtkinter as ctk
 from inventario import (ALMACENES, CARPETA_DATOS, DB_PATH, actualizar_partida, comparar_meses,
                         crear_tabla, eliminar_partida, fecha_para_mostrar,
                         insertar_partida, mes_anterior, normalizar_mes, obtener_partida,
-                        obtener_partidas, respaldar, respaldo_automatico)
+                        obtener_partidas, obtener_producto, respaldar, respaldo_automatico)
 from exportar_excel import generar_excel
 from formato_fechas import activar_formato_fecha, activar_formato_mes
 from reporte import generar_reporte_pdf, nombre_mes, texto_partidas
@@ -69,6 +69,8 @@ FILTRO_ALMACEN = {
 id_en_edicion = None
 # (mes, almacén) que había en el formulario antes de editar, para restaurarlos
 respaldo_formulario = None
+# Último código que ya se buscó, para no buscarlo de nuevo con cada tecla
+codigo_revisado = ""
 
 
 # ---------------------------------------------------------------- Funciones
@@ -117,7 +119,9 @@ def guardar():
     """Guarda lo que hay en el formulario.
 
     Si no se está editando, crea una partida nueva (INSERT).
-    Si se está editando, reemplaza los datos de esa partida (UPDATE).
+    Si se está editando, reemplaza los datos de esa partida (UPDATE); si se
+    corrigió el nombre o almacén del producto, antes pregunta si se corrige
+    en todas sus partidas.
     """
     datos = dict(
         mes=entrada_mes.get(),
@@ -132,7 +136,16 @@ def guardar():
         if id_en_edicion is None:
             insertar_partida(**datos)
         else:
-            actualizar_partida(id_en_edicion, **datos)
+            # confirmar recibe una FUNCIÓN: actualizar_partida la llama solo si
+            # necesita preguntar, y esta muestra la ventana de Sí/No
+            guardado = actualizar_partida(
+                id_en_edicion, **datos,
+                confirmar=lambda mensaje: messagebox.askyesno("Corregir producto", mensaje),
+            )
+            if not guardado:
+                mostrar_mensaje("No se guardó nada: el producto quedó como estaba.",
+                                COLOR_AVISO)
+                return
     except ValueError as error:
         mostrar_mensaje(str(error), COLOR_ERROR)
         return
@@ -162,12 +175,47 @@ def nuevo_producto():
 
     Si se estaba editando una partida, también cancela la edición.
     """
+    global codigo_revisado
+
     salir_de_edicion()
+    codigo_revisado = ""
     for entrada in (entrada_codigo, entrada_descripcion, entrada_existencia,
                     entrada_lote, entrada_caducidad):
         entrada.delete(0, "end")
     etiqueta_mensaje.configure(text="")  # Borra el aviso anterior
     entrada_codigo.focus()
+
+
+def al_escribir_codigo(evento=None):
+    """Si el código escrito ya está registrado, llena solos su descripción y almacén.
+
+    Así cada código conserva siempre el mismo producto (un código = un producto).
+    """
+    global codigo_revisado
+
+    codigo = entrada_codigo.get().strip().upper()
+    if codigo == codigo_revisado:
+        return  # El código no cambió (ej. se presionó una flecha o Shift)
+    codigo_revisado = codigo
+
+    # Al editar no se cuenta la propia partida: solo importa cómo están las demás
+    producto = obtener_producto(codigo, sin_id=id_en_edicion)
+    if producto:
+        entrada_descripcion.delete(0, "end")
+        entrada_descripcion.insert(0, producto["descripcion"])
+        selector_almacen.set(ALMACENES[producto["almacen"]])
+
+    if id_en_edicion is not None:
+        return  # Al editar no se borra nada ni se cambia el aviso "Editando..."
+
+    if producto:
+        mostrar_mensaje(f"{codigo} ya está registrado: se llenaron su descripción y almacén.",
+                        COLOR_TEXTO)
+    else:
+        # Código nuevo: se borra el nombre que quedó del producto anterior,
+        # para no guardar por error un producto nuevo con el nombre de otro
+        entrada_descripcion.delete(0, "end")
+        mostrar_mensaje("", COLOR_TEXTO)
 
 
 def cargar_tabla():
@@ -223,7 +271,7 @@ def id_seleccionado():
 
 def editar_seleccion():
     """Carga la partida seleccionada en el formulario de Captura para modificarla."""
-    global id_en_edicion, respaldo_formulario
+    global id_en_edicion, respaldo_formulario, codigo_revisado
 
     id_partida = id_seleccionado()
     if id_partida is None:
@@ -248,6 +296,7 @@ def editar_seleccion():
         entrada.delete(0, "end")
         entrada.insert(0, valor)
     selector_almacen.set(ALMACENES[partida["almacen"]])
+    codigo_revisado = partida["codigo"]  # Ya está en el formulario: no hay que buscarlo
 
     # Mostrar claramente que estamos en modo edición
     boton_guardar.configure(text="Guardar cambios")
@@ -699,6 +748,9 @@ etiqueta_comparacion.pack(anchor="w", pady=(10, 0))
 # ------------------------------------------------------------------ Arranque
 
 ventana.bind("<Return>", al_presionar_enter)
+
+# Al escribir un código ya registrado se llenan solos su descripción y almacén
+entrada_codigo.bind("<KeyRelease>", al_escribir_codigo)
 
 # Separadores automáticos y bloqueo de días/meses que no existen (formato_fechas.py)
 activar_formato_mes(entrada_mes)

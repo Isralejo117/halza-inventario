@@ -77,7 +77,9 @@ def validar_partida(mes, almacen, codigo, descripcion,
 
     # 2. Textos obligatorios
     codigo = codigo.strip().upper()
-    descripcion = descripcion.strip()
+    # split() corta en palabras y " ".join las vuelve a unir con UN espacio:
+    # quita espacios al inicio, al final y repetidos ("PARACETAMOL  30" -> "PARACETAMOL 30")
+    descripcion = " ".join(descripcion.split())
     lote = lote.strip().upper()
     if not codigo or not descripcion or not lote:
         raise ValueError("Código, descripción y lote son obligatorios.")
@@ -102,15 +104,63 @@ def validar_partida(mes, almacen, codigo, descripcion,
     return (mes, almacen, prefijo, codigo, descripcion, existencia, lote, fecha_iso)
 
 
+def obtener_producto(codigo, sin_id=None):
+    """Dice con qué nombre y en qué almacén está registrado un código.
+
+    Devuelve {"almacen", "descripcion", "partidas"} o None si el código es nuevo.
+    sin_id: id de una partida que NO se cuenta (la que se está editando).
+    """
+    with conectar() as conexion:
+        # "id IS NOT ?" y no "id != ?": si sin_id es None, "!= NULL" no deja pasar
+        # ninguna fila (en SQL, comparar con NULL da "desconocido"), en cambio
+        # "IS NOT NULL" deja pasar todas.
+        filas = conexion.execute(
+            """SELECT almacen, descripcion FROM barridos
+               WHERE codigo = ? AND id IS NOT ?
+               ORDER BY mes DESC, id DESC""",
+            (codigo.strip().upper(), sin_id),
+        ).fetchall()
+
+    if not filas:
+        return None
+    # Todas sus partidas deben decir lo mismo; se toma la más reciente
+    return {
+        "almacen": filas[0]["almacen"],
+        "descripcion": filas[0]["descripcion"],
+        "partidas": len(filas),
+    }
+
+
+def mismo_producto(producto, almacen, descripcion):
+    """¿El almacén y la descripción son los que ya tiene registrados el código?"""
+    return (producto["almacen"], producto["descripcion"]) == (almacen, descripcion)
+
+
+def aviso_otro_producto(codigo, producto):
+    """Mensaje para cuando se quiere usar un código que ya es de otro producto."""
+    return (f"El código {codigo} ya está registrado como \"{producto['descripcion']}\" "
+            f"en el {ALMACENES[producto['almacen']]}. Si es otro producto, revisa el "
+            "código. Para corregir su nombre o almacén, edita una de sus partidas.")
+
+
 def insertar_partida(mes, almacen, codigo, descripcion,
                      existencia, lote, fecha_caducidad):
     """Valida y guarda una partida NUEVA.
 
-    Lanza ValueError si un dato es inválido, e IntegrityError si la
-    partida (mes + almacén + código + lote) ya existe.
+    Lanza ValueError si un dato es inválido o si el código ya es de otro
+    producto, e IntegrityError si la partida (mes + almacén + código + lote)
+    ya existe.
     """
     datos = validar_partida(mes, almacen, codigo, descripcion,
                             existencia, lote, fecha_caducidad)
+    mes, almacen, prefijo, codigo, descripcion, existencia, lote, fecha_iso = datos
+
+    # Regla: un código = un producto (un solo nombre y un solo almacén).
+    # Puede tener muchos lotes, pero siempre con el mismo nombre y almacén.
+    producto = obtener_producto(codigo)
+    if producto and not mismo_producto(producto, almacen, descripcion):
+        raise ValueError(aviso_otro_producto(codigo, producto))
+
     with conectar() as conexion:
         conexion.execute(
             """INSERT INTO barridos
@@ -122,15 +172,53 @@ def insertar_partida(mes, almacen, codigo, descripcion,
 
 
 def actualizar_partida(id_partida, mes, almacen, codigo, descripcion,
-                       existencia, lote, fecha_caducidad):
+                       existencia, lote, fecha_caducidad, confirmar=None):
     """Valida y reemplaza los datos de una partida que ya existe.
 
-    Lanza los mismos errores que insertar_partida (IntegrityError si con
-    los cambios queda igual a otra partida del mismo mes y almacén).
+    Si se cambió la descripción o el almacén, el producto debe quedar igual en
+    TODAS sus partidas (un código = un producto). Antes de corregirlas se llama
+    a confirmar(mensaje): una función que recibe la pregunta y devuelve True o
+    False (la interfaz le pasa una que muestra una ventana de Sí/No).
+
+    Devuelve True si se guardó, o False si no se confirmó la corrección.
+    Lanza ValueError si un dato es inválido o si el código nuevo ya es de otro
+    producto, e IntegrityError si queda igual a otra partida del mismo mes y almacén.
     """
     datos = validar_partida(mes, almacen, codigo, descripcion,
                             existencia, lote, fecha_caducidad)
+    mes, almacen, prefijo, codigo, descripcion, existencia, lote, fecha_iso = datos
+
+    # Las OTRAS partidas de este código (sin contar la que se está editando)
+    producto = obtener_producto(codigo, sin_id=id_partida)
+    corregir_todas = producto is not None and not mismo_producto(producto, almacen, descripcion)
+
+    if corregir_todas:
+        if codigo != obtener_partida(id_partida)["codigo"]:
+            # Se cambió el código por el de OTRO producto que ya existe: no se permite
+            raise ValueError(aviso_otro_producto(codigo, producto))
+
+        # Mismo código con otro nombre o almacén: es una corrección del producto
+        n = producto["partidas"]
+        otras = "otra partida" if n == 1 else f"otras {n} partidas"
+        mensaje = (
+            f"El código {codigo} tiene {otras} (contando meses pasados) con estos datos:\n\n"
+            f"    {producto['descripcion']}\n    {ALMACENES[producto['almacen']]}\n\n"
+            "Para que el código siga siendo un solo producto, se cambiarán a:\n\n"
+            f"    {descripcion}\n    {ALMACENES[almacen]}\n\n"
+            "¿Continuar?"
+        )
+        if confirmar is None or not confirmar(mensaje):
+            return False  # No se guarda nada
+
+    # Los dos UPDATE van en la misma conexión: si el segundo falla, el "with"
+    # deshace también el primero (o se guardan los dos, o ninguno)
     with conectar() as conexion:
+        if corregir_todas:
+            conexion.execute(
+                """UPDATE barridos SET almacen = ?, prefijo = ?, descripcion = ?
+                   WHERE codigo = ?""",
+                (almacen, prefijo, descripcion, codigo),
+            )
         conexion.execute(
             """UPDATE barridos
                SET mes = ?, almacen = ?, prefijo = ?, codigo = ?, descripcion = ?,
@@ -138,6 +226,7 @@ def actualizar_partida(id_partida, mes, almacen, codigo, descripcion,
                WHERE id = ?""",
             datos + (id_partida,),
         )
+    return True
 
 
 def eliminar_partida(id_partida):
