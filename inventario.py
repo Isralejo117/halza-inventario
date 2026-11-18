@@ -1,5 +1,7 @@
+import re
 import sqlite3
 import sys
+import unicodedata
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
@@ -149,17 +151,65 @@ def fecha_para_mostrar(fecha_iso):
     return datetime.strptime(fecha_iso, "%Y-%m-%d").strftime("%d/%m/%Y")
 
 
-def obtener_partidas(mes=None):
-    """Devuelve todas las partidas, o solo las de un mes si se indica."""
-    consulta = "SELECT * FROM barridos"
-    parametros = ()
+def sin_acentos(texto):
+    """Prepara un texto para buscar: 'Gasas ESTÉRILES' -> 'gasas esteriles'."""
+    # NFD separa cada letra de su acento: "é" -> "e" + "´" (el acento queda como
+    # un carácter aparte, de la categoría "Mn"), y luego se quitan los acentos.
+    separado = unicodedata.normalize("NFD", texto.lower())
+    return "".join(c for c in separado if unicodedata.category(c) != "Mn")
+
+
+def obtener_partidas(mes=None, almacen=None, texto=""):
+    """Devuelve las partidas que cumplen los filtros indicados (todos son opcionales).
+
+    mes: "AAAA-MM" | almacen: "1" o "2"
+    texto: palabras a buscar en el código, la descripción o el lote. Sin importar
+           mayúsculas, acentos ni el orden: "aguja jeringa 5" encuentra
+           "Jeringa 5 ml c/aguja 21G". Cada palabra buscada debe ser el INICIO
+           de una palabra del producto: "20" encuentra "20 ml", pero no el lote "JR10200".
+    """
+    # 1. Filtros de SQL: se juntan solo las condiciones que sí se pidieron
+    condiciones = []
+    parametros = []
     if mes:
-        consulta += " WHERE mes = ?"
-        parametros = (normalizar_mes(mes),)
+        condiciones.append("mes = ?")
+        parametros.append(normalizar_mes(mes))
+    if almacen:
+        condiciones.append("almacen = ?")
+        parametros.append(almacen)
+
+    consulta = "SELECT * FROM barridos"
+    if condiciones:
+        consulta += " WHERE " + " AND ".join(condiciones)
     consulta += " ORDER BY mes DESC, almacen, codigo, fecha_caducidad"
 
     with conectar() as conexion:
-        return conexion.execute(consulta, parametros).fetchall()
+        partidas = conexion.execute(consulta, parametros).fetchall()
+
+    # 2. Búsqueda de texto en Python (SQL no sabe ignorar acentos)
+    buscadas = palabras_de(texto)
+    if buscadas:
+        partidas = [p for p in partidas if coincide(p, buscadas)]
+    return partidas
+
+
+def palabras_de(texto):
+    """Separa un texto en palabras sin acentos ni mayúsculas.
+
+    'Jeringa 5 ml c/aguja' -> ['jeringa', '5', 'ml', 'c', 'aguja']
+    '1-P02836'             -> ['1', 'p02836']
+    """
+    # [a-z0-9]+ = "uno o más caracteres seguidos que sean letra o número".
+    # Todo lo demás (espacios, "/", "-", ".") funciona como separador.
+    return re.findall(r"[a-z0-9]+", sin_acentos(texto))
+
+
+def coincide(partida, buscadas):
+    """¿Cada palabra buscada es el inicio de alguna palabra de la partida?"""
+    palabras = palabras_de(f"{partida['prefijo']}{partida['codigo']} "
+                           f"{partida['descripcion']} {partida['lote']}")
+    return all(any(palabra.startswith(buscada) for palabra in palabras)
+               for buscada in buscadas)
 
 
 def obtener_partida(id_partida):

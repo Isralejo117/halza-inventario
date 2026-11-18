@@ -54,6 +54,14 @@ COLORES_ESTADO = {
     "Cambió": "#fff1c7",      # amarillo claro
 }
 
+# Botones del filtro de almacén en Consulta: texto del botón -> clave del almacén
+# (None = sin filtro, se muestran los dos)
+FILTRO_ALMACEN = {
+    "Todos": None,
+    "1 · Chico": "1",
+    "2 · Grande": "2",
+}
+
 
 # ------------------------------------------------------------------- Estado
 
@@ -163,9 +171,13 @@ def nuevo_producto():
 
 
 def cargar_tabla():
-    """Vacía la tabla y la vuelve a llenar con las partidas del mes del filtro."""
+    """Vacía la tabla y la vuelve a llenar según los filtros: mes, producto y almacén."""
     try:
-        partidas = obtener_partidas(entrada_filtro_mes.get())
+        partidas = obtener_partidas(
+            entrada_filtro_mes.get(),
+            almacen=FILTRO_ALMACEN[selector_filtro_almacen.get()],
+            texto=entrada_buscar.get(),
+        )
     except ValueError as error:
         etiqueta_resumen.configure(text=str(error), text_color=COLOR_ERROR)
         return
@@ -190,6 +202,14 @@ def ver_todos():
     """Vacía el filtro de mes y muestra las partidas de todos los meses."""
     entrada_filtro_mes.delete(0, "end")
     cargar_tabla()
+
+
+def limpiar_busqueda():
+    """Quita la búsqueda de producto y el filtro de almacén (el mes se queda igual)."""
+    entrada_buscar.delete(0, "end")
+    selector_filtro_almacen.set("Todos")
+    cargar_tabla()
+    entrada_buscar.focus()
 
 
 def id_seleccionado():
@@ -601,6 +621,28 @@ boton_eliminar.pack(side="right")
 
 boton_editar = ctk.CTkButton(filtro, text="Editar", width=100, command=editar_seleccion)
 boton_editar.pack(side="right", padx=10)
+
+# Segunda fila: [Producto:] [caja de búsqueda] [Limpiar]       [Almacén:] [Todos|1|2]
+busqueda = ctk.CTkFrame(pestana_consulta, fg_color="transparent")
+busqueda.pack(fill="x", pady=(0, 10))
+
+ctk.CTkLabel(busqueda, text="Producto:").pack(side="left", padx=(0, 10))
+entrada_buscar = ctk.CTkEntry(busqueda, width=300, placeholder_text="Código, nombre o lote")
+entrada_buscar.pack(side="left")
+# Busca mientras se escribe: cada vez que se suelta una tecla, se recarga la tabla
+entrada_buscar.bind("<KeyRelease>", lambda evento: cargar_tabla())
+
+boton_limpiar = ctk.CTkButton(busqueda, text="Limpiar", width=80, command=limpiar_busqueda,
+                              fg_color="transparent", border_width=2, text_color=COLOR_TEXTO)
+boton_limpiar.pack(side="left", padx=10)
+
+# Botones pegados: solo uno puede estar activo. command recibe el texto del botón
+# elegido, pero cargar_tabla() no lo necesita (lo lee con .get()), por eso el lambda.
+selector_filtro_almacen = ctk.CTkSegmentedButton(busqueda, values=list(FILTRO_ALMACEN),
+                                                 command=lambda valor: cargar_tabla())
+selector_filtro_almacen.set("Todos")
+selector_filtro_almacen.pack(side="right")
+ctk.CTkLabel(busqueda, text="Almacén:").pack(side="right", padx=(0, 10))
 
 
 tabla = crear_tabla_visual(pestana_consulta, COLUMNAS)
