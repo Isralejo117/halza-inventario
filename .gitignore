@@ -1,0 +1,17 @@
+# Python
+__pycache__/
+*.pyc
+
+# PyInstaller: se vuelven a crear con crear_exe.bat
+build/
+dist/
+*.spec
+
+# Datos del inventario: NUNCA se suben (información de la empresa)
+*.db
+respaldos/
+errores.log
+
+# Reportes exportados (también contienen datos de la empresa)
+*.pdf
+*.xlsx
