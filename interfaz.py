@@ -6,9 +6,11 @@ from tkinter import filedialog, messagebox, ttk
 
 import customtkinter as ctk
 
-from inventario import (ALMACENES, CARPETA_DATOS, DB_PATH, actualizar_partida, comparar_meses,
+from inventario import (ALMACENES, CARPETA_DATOS, DB_PATH, FECHA_NO_CADUCA, NO_CADUCA,
+                        actualizar_partida, comparar_meses,
                         crear_tabla, eliminar_partida, fecha_para_mostrar,
-                        insertar_partida, mes_anterior, normalizar_mes, obtener_partida,
+                        insertar_partida, limite_de_caducidad, mes_anterior,
+                        normalizar_mes, obtener_partida,
                         obtener_partidas, obtener_producto, respaldar, respaldo_automatico)
 from exportar_excel import generar_excel
 from formato_fechas import activar_formato_fecha, activar_formato_mes
@@ -53,6 +55,9 @@ COLORES_ESTADO = {
     "Ya no está": "#fde0e0",  # rojo claro
     "Cambió": "#fff1c7",      # amarillo claro
 }
+
+# Consulta: fondo de las partidas con menos de un año para caducar (o ya caducadas)
+COLOR_POR_CADUCAR = "#f8caca"  # rojo claro
 
 # Botones del filtro de almacén en Consulta: texto del botón -> clave del almacén
 # (None = sin filtro, se muestran los dos)
@@ -160,8 +165,10 @@ def guardar():
         mostrar_mensaje(f"Guardado: {resumen}", COLOR_OK)
         # Se conservan mes, almacén, código y descripción para capturar
         # rápido el siguiente lote del mismo producto.
-        for entrada in (entrada_existencia, entrada_lote, entrada_caducidad):
+        for entrada in (entrada_existencia, entrada_lote):
             entrada.delete(0, "end")
+        if not casilla_no_caduca.get():  # "No caduca" se queda para el siguiente lote
+            entrada_caducidad.delete(0, "end")
         entrada_existencia.focus()
     else:
         nuevo_producto()  # Sale del modo edición y deja el formulario limpio
@@ -179,11 +186,31 @@ def nuevo_producto():
 
     salir_de_edicion()
     codigo_revisado = ""
-    for entrada in (entrada_codigo, entrada_descripcion, entrada_existencia,
-                    entrada_lote, entrada_caducidad):
+    for entrada in (entrada_codigo, entrada_descripcion, entrada_existencia, entrada_lote):
         entrada.delete(0, "end")
+    poner_no_caduca(False)  # Desmarca la casilla y deja la caducidad vacía
     etiqueta_mensaje.configure(text="")  # Borra el aviso anterior
     entrada_codigo.focus()
+
+
+def poner_no_caduca(activa):
+    """Marca o desmarca la casilla "No caduca" y ajusta la caja de Caducidad.
+
+    Marcada: la caja dice "No caduca" y se bloquea (no se puede escribir una fecha).
+    Desmarcada: la caja queda vacía y lista para escribir una fecha.
+    """
+    if activa:
+        casilla_no_caduca.select()
+    else:
+        casilla_no_caduca.deselect()
+
+    # Una caja bloqueada ("disabled") no deja cambiar su texto, ni siquiera desde
+    # el código; por eso primero se desbloquea, se cambia el texto y al final se bloquea
+    entrada_caducidad.configure(state="normal")
+    entrada_caducidad.delete(0, "end")
+    if activa:
+        entrada_caducidad.insert(0, NO_CADUCA)
+        entrada_caducidad.configure(state="disabled")
 
 
 def al_escribir_codigo(evento=None):
@@ -204,6 +231,9 @@ def al_escribir_codigo(evento=None):
         entrada_descripcion.delete(0, "end")
         entrada_descripcion.insert(0, producto["descripcion"])
         selector_almacen.set(ALMACENES[producto["almacen"]])
+        # La casilla se cambia solo si hace falta, para no borrar una fecha ya escrita
+        if producto["no_caduca"] != bool(casilla_no_caduca.get()):
+            poner_no_caduca(producto["no_caduca"])
 
     if id_en_edicion is not None:
         return  # Al editar no se borra nada ni se cambia el aviso "Editando..."
@@ -215,6 +245,10 @@ def al_escribir_codigo(evento=None):
         # Código nuevo: se borra el nombre que quedó del producto anterior,
         # para no guardar por error un producto nuevo con el nombre de otro
         entrada_descripcion.delete(0, "end")
+        # Y empieza pidiendo su fecha: así no se queda marcado "No caduca" por
+        # olvido cuando después de una silla se captura un medicamento
+        if casilla_no_caduca.get():
+            poner_no_caduca(False)
         mostrar_mensaje("", COLOR_TEXTO)
 
 
@@ -232,8 +266,17 @@ def cargar_tabla():
 
     tabla.delete(*tabla.get_children())  # Borra todas las filas actuales
 
+    # Las fechas AAAA-MM-DD se pueden comparar como texto: "2027-02-28" < "2027-11-19".
+    # Los productos que no caducan (9999-12-31) nunca quedan antes del límite.
+    limite = limite_de_caducidad()
+    por_caducar = 0
+
     for fila in partidas:
-        tabla.insert("", "end", iid=fila["id"], values=(
+        etiquetas = ()
+        if fila["fecha_caducidad"] < limite:
+            etiquetas = ("por_caducar",)  # Esta etiqueta pinta la fila de rojo
+            por_caducar += 1
+        tabla.insert("", "end", iid=fila["id"], tags=etiquetas, values=(
             fila["mes"],
             fila["prefijo"] + fila["codigo"],
             fila["descripcion"],
@@ -243,8 +286,10 @@ def cargar_tabla():
         ))
 
     total = sum(fila["existencia"] for fila in partidas)
-    etiqueta_resumen.configure(text=f"{texto_partidas(len(partidas))}  |  Existencia total: {total}",
-                               text_color=COLOR_TEXTO)
+    etiqueta_resumen.configure(
+        text=f"{texto_partidas(len(partidas))}  |  Existencia total: {total}  |  "
+             f"En rojo: {por_caducar} con menos de 1 año para caducar",
+        text_color=COLOR_TEXTO)
 
 def ver_todos():
     """Vacía el filtro de mes y muestra las partidas de todos los meses."""
@@ -290,12 +335,17 @@ def editar_seleccion():
         (entrada_descripcion, partida["descripcion"]),
         (entrada_existencia, str(partida["existencia"])),
         (entrada_lote, partida["lote"]),
-        (entrada_caducidad, fecha_para_mostrar(partida["fecha_caducidad"])),
     )
     for entrada, valor in valores:
         entrada.delete(0, "end")
         entrada.insert(0, valor)
     selector_almacen.set(ALMACENES[partida["almacen"]])
+
+    # Caducidad: o la casilla "No caduca" marcada, o su fecha en la caja
+    no_caduca = partida["fecha_caducidad"] == FECHA_NO_CADUCA
+    poner_no_caduca(no_caduca)
+    if not no_caduca:
+        entrada_caducidad.insert(0, fecha_para_mostrar(partida["fecha_caducidad"]))
     codigo_revisado = partida["codigo"]  # Ya está en el formulario: no hay que buscarlo
 
     # Mostrar claramente que estamos en modo edición
@@ -630,6 +680,13 @@ entrada_existencia = crear_campo(4, "Existencia:", "Cantidad de este lote")
 entrada_lote = crear_campo(5, "Lote:", "Ej. KH233224")
 entrada_caducidad = crear_campo(6, "Caducidad:", "dd/mm/aaaa")
 
+# Para lo que no caduca (sillas, tijeras...): bloquea la fecha y guarda "No caduca".
+# .get() de una casilla da 1 si está marcada y 0 si no.
+casilla_no_caduca = ctk.CTkCheckBox(
+    formulario, text="No caduca (sillas, tijeras, batas…)",
+    command=lambda: poner_no_caduca(casilla_no_caduca.get() == 1))
+casilla_no_caduca.grid(row=7, column=1, sticky="w", pady=(0, 6))
+
 # Contenedor invisible para poner los dos botones lado a lado
 botones = ctk.CTkFrame(pestana_captura, fg_color="transparent")
 botones.pack(pady=(10, 5))
@@ -695,6 +752,7 @@ ctk.CTkLabel(busqueda, text="Almacén:").pack(side="right", padx=(0, 10))
 
 
 tabla = crear_tabla_visual(pestana_consulta, COLUMNAS)
+tabla.tag_configure("por_caducar", background=COLOR_POR_CADUCAR)
 
 # Atajos: doble clic en una fila = Editar; tecla Supr = Eliminar
 tabla.bind("<Double-1>", lambda evento: editar_seleccion())

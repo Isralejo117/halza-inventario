@@ -7,9 +7,11 @@ Proyecto de prácticas profesionales — Ingeniería en Tecnología de Software,
 ## Funciones
 
 - **Captura** de partidas: un mismo producto puede tener varios lotes con distinta existencia y caducidad.
+- **Productos que no caducan** (sillas, tijeras, batas…): casilla «No caduca». Internamente se guardan con la fecha 31/12/9999, así quedan al final al ordenar por caducidad y cumplen cualquier mínimo de vida útil.
 - **Un código = un producto**: al escribir un código ya registrado se llenan solos su nombre y almacén, y no se permite usarlo para otro producto. Si se corrige el nombre o el almacén, se corrige en todas sus partidas.
 - **Validación al escribir**: las fechas se formatean solas (`03062028` → `03/06/2028`) y no se aceptan días o meses que no existen (incluye años bisiestos).
 - **Consulta** por mes, con edición y eliminación de partidas.
+- **Aviso de caducidad**: en Consulta se marcan en rojo las partidas con menos de 1 año para caducar (algunas empresas no aceptan productos que caduquen antes).
 - **Comparación** lote por lote contra el mes anterior: lotes nuevos, que ya no están, que cambiaron o sin cambio.
 - **Reporte PDF** imprimible, separado por almacén, con subtotales y firmas.
 - **Exportación a Excel** con filtros, fechas reales y la hoja de comparación.

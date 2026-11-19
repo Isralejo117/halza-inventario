@@ -25,6 +25,12 @@ ALMACENES = {
     "2": "Almacén Grande (Uso Médico)",
 }
 
+# Productos que no caducan (sillas, tijeras, batas...). El usuario ve NO_CADUCA y
+# en la base se guarda FECHA_NO_CADUCA, la fecha más lejana posible: así quedan
+# al final al ordenar por caducidad y siempre cumplen "mínimo un año para caducar".
+NO_CADUCA = "No caduca"
+FECHA_NO_CADUCA = "9999-12-31"
+
 
 
 def conectar():
@@ -95,11 +101,15 @@ def validar_partida(mes, almacen, codigo, descripcion,
     if existencia < 0:
         raise ValueError("La existencia no puede ser negativa.")
 
-    # 5. Caducidad: el usuario escribe DD/MM/AAAA; se guarda como AAAA-MM-DD
-    try:
-        fecha_iso = datetime.strptime(fecha_caducidad.strip(), "%d/%m/%Y").date().isoformat()
-    except ValueError:
-        raise ValueError("Caducidad inválida. Usa el formato dd/mm/aaaa (ej. 03/06/2028).")
+    # 5. Caducidad: el usuario escribe DD/MM/AAAA (o "No caduca"); se guarda como AAAA-MM-DD
+    if fecha_caducidad.strip().lower() == NO_CADUCA.lower():
+        fecha_iso = FECHA_NO_CADUCA
+    else:
+        try:
+            fecha_iso = datetime.strptime(fecha_caducidad.strip(), "%d/%m/%Y").date().isoformat()
+        except ValueError:
+            raise ValueError("Caducidad inválida. Usa el formato dd/mm/aaaa (ej. 03/06/2028) "
+                             "o marca \"No caduca\".")
 
     return (mes, almacen, prefijo, codigo, descripcion, existencia, lote, fecha_iso)
 
@@ -107,15 +117,15 @@ def validar_partida(mes, almacen, codigo, descripcion,
 def obtener_producto(codigo, sin_id=None):
     """Dice con qué nombre y en qué almacén está registrado un código.
 
-    Devuelve {"almacen", "descripcion", "partidas"} o None si el código es nuevo.
-    sin_id: id de una partida que NO se cuenta (la que se está editando).
+    Devuelve {"almacen", "descripcion", "no_caduca", "partidas"} o None si el
+    código es nuevo. sin_id: id de una partida que NO se cuenta (la que se está editando).
     """
     with conectar() as conexion:
         # "id IS NOT ?" y no "id != ?": si sin_id es None, "!= NULL" no deja pasar
         # ninguna fila (en SQL, comparar con NULL da "desconocido"), en cambio
         # "IS NOT NULL" deja pasar todas.
         filas = conexion.execute(
-            """SELECT almacen, descripcion FROM barridos
+            """SELECT almacen, descripcion, fecha_caducidad FROM barridos
                WHERE codigo = ? AND id IS NOT ?
                ORDER BY mes DESC, id DESC""",
             (codigo.strip().upper(), sin_id),
@@ -127,6 +137,7 @@ def obtener_producto(codigo, sin_id=None):
     return {
         "almacen": filas[0]["almacen"],
         "descripcion": filas[0]["descripcion"],
+        "no_caduca": filas[0]["fecha_caducidad"] == FECHA_NO_CADUCA,
         "partidas": len(filas),
     }
 
@@ -236,8 +247,29 @@ def eliminar_partida(id_partida):
 
 
 def fecha_para_mostrar(fecha_iso):
-    """Convierte la fecha guardada '2028-06-03' al formato '03/06/2028'."""
+    """Convierte la fecha guardada '2028-06-03' al formato '03/06/2028'.
+
+    La fecha de los productos que no caducan (9999-12-31) se muestra como 'No caduca'.
+    """
+    if fecha_iso == FECHA_NO_CADUCA:
+        return NO_CADUCA
     return datetime.strptime(fecha_iso, "%Y-%m-%d").strftime("%d/%m/%Y")
+
+
+def limite_de_caducidad(hoy=None):
+    """Devuelve la fecha de dentro de un año (AAAA-MM-DD).
+
+    Lo que caduca antes de esa fecha no cumple el mínimo de un año para
+    caducar que piden algunas empresas. Ej. hoy 19/11/2026 -> '2027-11-19'.
+    hoy: se puede indicar otra fecha para hacer pruebas (si no, se usa la de hoy).
+    """
+    hoy = hoy or date.today()
+    try:
+        limite = hoy.replace(year=hoy.year + 1)
+    except ValueError:
+        # Hoy es 29 de febrero y el año que entra no es bisiesto: se usa el 28
+        limite = hoy.replace(year=hoy.year + 1, day=28)
+    return limite.isoformat()
 
 
 def sin_acentos(texto):

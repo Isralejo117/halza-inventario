@@ -6,8 +6,8 @@ from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill
 from openpyxl.utils import get_column_letter
 
-from inventario import (ALMACENES, comparar_meses, mes_anterior, normalizar_mes,
-                        obtener_partidas)
+from inventario import (ALMACENES, FECHA_NO_CADUCA, NO_CADUCA, comparar_meses,
+                        mes_anterior, normalizar_mes, obtener_partidas)
 
 NEGRITAS = Font(bold=True)
 FONDO_ENCABEZADO = PatternFill("solid", fgColor="D9D9D9")  # Gris claro
@@ -30,6 +30,13 @@ COLORES_ESTADO = {
     "Ya no está": "FDE0E0",
     "Cambió": "FFF1C7",
 }
+
+
+def caducidad_para_excel(fecha_iso):
+    """'2028-06-03' -> fecha real de Excel; los productos que no caducan -> texto 'No caduca'."""
+    if fecha_iso == FECHA_NO_CADUCA:
+        return NO_CADUCA
+    return date.fromisoformat(fecha_iso)
 
 
 def escribir_hoja(hoja, columnas, filas):
@@ -90,7 +97,7 @@ def hoja_partidas(libro, partidas):
             p["prefijo"] + p["codigo"],
             p["descripcion"],
             p["lote"],
-            date.fromisoformat(p["fecha_caducidad"]),  # "2028-06-03" -> fecha real
+            caducidad_para_excel(p["fecha_caducidad"]),
             p["existencia"],
         ])
     escribir_hoja(hoja, COLUMNAS_PARTIDAS, filas)
@@ -109,7 +116,7 @@ def hoja_comparacion(libro, mes):
             lote["prefijo"] + lote["codigo"],
             lote["descripcion"],
             lote["lote"],
-            date.fromisoformat(lote["fecha_caducidad"]),
+            caducidad_para_excel(lote["fecha_caducidad"]),
             lote["existencia_anterior"],  # None -> la celda queda vacía
             lote["existencia_actual"],
             lote["diferencia"],
