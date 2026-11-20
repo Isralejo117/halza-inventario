@@ -2,6 +2,7 @@ import os
 import sqlite3
 import traceback
 from datetime import datetime
+from itertools import groupby
 from tkinter import filedialog, messagebox, ttk
 
 import customtkinter as ctk
@@ -14,7 +15,7 @@ from inventario import (ALMACENES, CARPETA_DATOS, DB_PATH, FECHA_NO_CADUCA, NO_C
                         obtener_partidas, obtener_producto, respaldar, respaldo_automatico)
 from exportar_excel import generar_excel
 from formato_fechas import activar_formato_fecha, activar_formato_mes
-from reporte import generar_reporte_pdf, nombre_mes, texto_partidas
+from reporte import generar_reporte_pdf, nombre_mes
 
 # Diccionario inverso: "Almacén Chico (Medicamentos)" -> "1"
 CLAVE_POR_NOMBRE = {nombre: clave for clave, nombre in ALMACENES.items()}
@@ -94,16 +95,22 @@ def crear_campo(fila, texto, ejemplo=""):
     return entrada
 
 
-def crear_tabla_visual(padre, columnas):
+def crear_tabla_visual(padre, columnas, con_arbol=False):
     """Crea una tabla (ttk.Treeview) con su barra de desplazamiento y la devuelve.
 
     columnas: tuplas (nombre interno, encabezado, ancho, alineación).
+    con_arbol: True = filas que se despliegan (un producto y debajo sus lotes).
     """
     marco = ctk.CTkFrame(padre, fg_color="transparent")
     marco.pack(fill="both", expand=True)
 
-    nueva_tabla = ttk.Treeview(marco, columns=[c[0] for c in columnas], show="headings",
+    # "headings" muestra solo las columnas; "tree headings" agrega a la izquierda
+    # la columna del árbol (#0), que es donde aparece la flechita para desplegar
+    mostrar = "tree headings" if con_arbol else "headings"
+    nueva_tabla = ttk.Treeview(marco, columns=[c[0] for c in columnas], show=mostrar,
                                selectmode="browse")  # "browse" = solo una fila a la vez
+    if con_arbol:
+        nueva_tabla.column("#0", width=30, minwidth=30, stretch=False)  # Solo para la flechita
     for nombre, encabezado, ancho, alineacion in columnas:
         nueva_tabla.heading(nombre, text=encabezado)
         nueva_tabla.column(nombre, width=ancho, anchor=alineacion)
@@ -252,8 +259,31 @@ def al_escribir_codigo(evento=None):
         mostrar_mensaje("", COLOR_TEXTO)
 
 
+def agregar_lote(partida, padre, en_rojo):
+    """Agrega una partida (un lote) a la tabla de Consulta.
+
+    padre: "" = va como fila principal (producto de un solo lote);
+           el iid de un producto = va debajo de él, al desplegarlo.
+    El iid de la fila es el id de la partida: así Editar y Eliminar saben cuál es.
+    """
+    if padre:
+        inicio = ("", "", "")  # Mes, código y descripción ya están en la fila del producto
+    else:
+        inicio = (partida["mes"], partida["prefijo"] + partida["codigo"], partida["descripcion"])
+
+    tabla.insert(padre, "end", iid=partida["id"],
+                 tags=("por_caducar",) if en_rojo else (),  # Esta etiqueta pinta la fila de rojo
+                 values=inicio + (partida["lote"],
+                                  fecha_para_mostrar(partida["fecha_caducidad"]),
+                                  partida["existencia"]))
+
+
 def cargar_tabla():
-    """Vacía la tabla y la vuelve a llenar según los filtros: mes, producto y almacén."""
+    """Vacía la tabla y la vuelve a llenar según los filtros: mes, producto y almacén.
+
+    Cada producto ocupa una fila. Si tiene varios lotes, su fila muestra el total
+    y se despliega (flechita a la izquierda) para ver cada lote con su caducidad.
+    """
     try:
         partidas = obtener_partidas(
             entrada_filtro_mes.get(),
@@ -264,31 +294,47 @@ def cargar_tabla():
         etiqueta_resumen.configure(text=str(error), text_color=COLOR_ERROR)
         return
 
+    # Recordar qué productos estaban desplegados, para dejarlos igual al recargar
+    abiertos = [fila for fila in tabla.get_children() if tabla.item(fila, "open")]
     tabla.delete(*tabla.get_children())  # Borra todas las filas actuales
 
     # Las fechas AAAA-MM-DD se pueden comparar como texto: "2027-02-28" < "2027-11-19".
     # Los productos que no caducan (9999-12-31) nunca quedan antes del límite.
     limite = limite_de_caducidad()
     por_caducar = 0
+    productos = 0
 
-    for fila in partidas:
-        etiquetas = ()
-        if fila["fecha_caducidad"] < limite:
-            etiquetas = ("por_caducar",)  # Esta etiqueta pinta la fila de rojo
-            por_caducar += 1
-        tabla.insert("", "end", iid=fila["id"], tags=etiquetas, values=(
-            fila["mes"],
-            fila["prefijo"] + fila["codigo"],
-            fila["descripcion"],
-            fila["lote"],
-            fecha_para_mostrar(fila["fecha_caducidad"]),
-            fila["existencia"],
-        ))
+    # groupby junta las filas SEGUIDAS que tienen la misma clave (mes y código).
+    # Funciona porque obtener_partidas ya las ordena por mes, almacén y código:
+    # todos los lotes de un mismo producto vienen juntos.
+    for (mes, codigo), grupo in groupby(partidas, key=lambda p: (p["mes"], p["codigo"])):
+        lotes = list(grupo)
+        productos += 1
+        en_rojo = [lote["fecha_caducidad"] < limite for lote in lotes]  # True/False por lote
+        por_caducar += sum(en_rojo)  # sum() cuenta cada True como 1
+
+        if len(lotes) == 1:
+            agregar_lote(lotes[0], "", en_rojo[0])  # Un solo lote: fila normal
+            continue
+
+        # Varios lotes: primero la fila del producto con el total...
+        # Su iid es texto ("2026-11|P00089") para no confundirlo con el id de una partida
+        producto = f"{mes}|{codigo}"
+        primero = lotes[0]
+        tabla.insert("", "end", iid=producto, open=producto in abiertos,
+                     tags=("por_caducar",) if any(en_rojo) else (),  # Rojo si algún lote lo está
+                     values=(mes, primero["prefijo"] + codigo, primero["descripcion"],
+                             f"{len(lotes)} lotes", "",
+                             sum(lote["existencia"] for lote in lotes)))
+        # ...y debajo de ella, cada lote (zip recorre las dos listas al mismo tiempo)
+        for lote, rojo in zip(lotes, en_rojo):
+            agregar_lote(lote, producto, rojo)
 
     total = sum(fila["existencia"] for fila in partidas)
+    nombre = "producto" if productos == 1 else "productos"
     etiqueta_resumen.configure(
-        text=f"{texto_partidas(len(partidas))}  |  Existencia total: {total}  |  "
-             f"En rojo: {por_caducar} con menos de 1 año para caducar",
+        text=f"{productos} {nombre} ({len(partidas)} lotes)  |  Existencia: {total}  |  "
+             f"En rojo: {por_caducar} vencen en menos de 1 año",
         text_color=COLOR_TEXTO)
 
 def ver_todos():
@@ -311,7 +357,24 @@ def id_seleccionado():
     if not seleccion:
         messagebox.showwarning("Sin selección", "Primero selecciona una partida en la tabla.")
         return None
-    return int(seleccion[0])
+    fila = seleccion[0]
+    if tabla.get_children(fila):  # Tiene filas debajo: es un producto, no un lote
+        messagebox.showwarning(
+            "Producto con varios lotes",
+            "Este producto tiene varios lotes. Despliégalo (flechita de la izquierda "
+            "o doble clic) y selecciona el lote que quieres editar o eliminar.")
+        return None
+    return int(fila)
+
+
+def al_doble_clic(evento):
+    """Doble clic: en un producto con varios lotes lo despliega o pliega; en un lote, lo edita."""
+    fila = tabla.identify_row(evento.y)  # La fila que está bajo el mouse ("" = ninguna)
+    if not fila or tabla.get_children(fila):
+        # Sin fila (ej. el encabezado) o un producto con lotes: no se edita nada.
+        # El Treeview mismo despliega o pliega el producto con el doble clic.
+        return
+    editar_seleccion()
 
 
 def editar_seleccion():
@@ -751,19 +814,18 @@ selector_filtro_almacen.pack(side="right")
 ctk.CTkLabel(busqueda, text="Almacén:").pack(side="right", padx=(0, 10))
 
 
-tabla = crear_tabla_visual(pestana_consulta, COLUMNAS)
+tabla = crear_tabla_visual(pestana_consulta, COLUMNAS, con_arbol=True)
 tabla.tag_configure("por_caducar", background=COLOR_POR_CADUCAR)
 
-# Atajos: doble clic en una fila = Editar; tecla Supr = Eliminar
-tabla.bind("<Double-1>", lambda evento: editar_seleccion())
+# Atajos: doble clic = desplegar un producto o editar un lote; tecla Supr = Eliminar
+tabla.bind("<Double-1>", al_doble_clic)
 tabla.bind("<Delete>", lambda evento: eliminar_seleccion())
 
-# Fila inferior: resumen a la izquierda y botón del PDF a la derecha
+# Fila inferior: resumen a la izquierda y botones de Excel y PDF a la derecha.
+# Los botones se acomodan ANTES que el resumen: pack reparte el espacio en orden,
+# así que si el texto no cabe, lo que se corta es el texto y no los botones.
 pie = ctk.CTkFrame(pestana_consulta, fg_color="transparent")
 pie.pack(fill="x", pady=(10, 0))
-
-etiqueta_resumen = ctk.CTkLabel(pie, text="")
-etiqueta_resumen.pack(side="left")
 
 boton_pdf = ctk.CTkButton(pie, text="Generar PDF del mes", width=160, command=generar_pdf)
 boton_pdf.pack(side="right")
@@ -772,6 +834,9 @@ boton_pdf.pack(side="right")
 boton_excel = ctk.CTkButton(pie, text="Exportar a Excel", width=140, command=exportar_excel,
                             fg_color="#1d6f42", hover_color="#155232")
 boton_excel.pack(side="right", padx=10)
+
+etiqueta_resumen = ctk.CTkLabel(pie, text="", anchor="w")
+etiqueta_resumen.pack(side="left", fill="x", expand=True)
 
 # ----------------------------------------------------- Pestaña Comparar
 
