@@ -7,10 +7,14 @@ from openpyxl.styles import Font, PatternFill
 from openpyxl.utils import get_column_letter
 
 from inventario import (ALMACENES, FECHA_NO_CADUCA, NO_CADUCA, comparar_meses,
-                        mes_anterior, normalizar_mes, obtener_partidas)
+                        fecha_para_mostrar, limite_de_caducidad, mes_anterior,
+                        normalizar_mes, obtener_partidas)
+from reporte import COLORES_ESTADO
 
 NEGRITAS = Font(bold=True)
+CURSIVAS = Font(italic=True)
 FONDO_ENCABEZADO = PatternFill("solid", fgColor="D9D9D9")  # Gris claro
+FONDO_POR_CADUCAR = PatternFill("solid", fgColor="F8CACA")  # Mismo rojo que en Consulta
 FORMATO_FECHA = "DD/MM/YYYY"
 FORMATO_CON_SIGNO = "+0;-0;0"  # Formato de Excel: positivos;negativos;cero
 
@@ -23,13 +27,6 @@ COLUMNAS_COMPARACION = (
     ("Estado", 12), ("Almacén", 30), ("Código", 12), ("Descripción", 40),
     ("Lote", 14), ("Caducidad", 12), ("Anterior", 10), ("Actual", 10), ("Diferencia", 11),
 )
-
-# Mismos colores que la pestaña Comparar (en Excel van sin el "#")
-COLORES_ESTADO = {
-    "Nuevo": "DFF3E4",
-    "Ya no está": "FDE0E0",
-    "Cambió": "FFF1C7",
-}
 
 
 def caducidad_para_excel(fecha_iso):
@@ -101,7 +98,26 @@ def hoja_partidas(libro, partidas):
             p["existencia"],
         ])
     escribir_hoja(hoja, COLUMNAS_PARTIDAS, filas)
-    agregar_total(hoja, ["G"])
+    fila_total = agregar_total(hoja, ["G"])
+
+    # Rojo: lotes con menos de 1 año para caducar, igual que en Consulta.
+    # La partida 0 de la lista quedó en la fila 2 de Excel (la 1 es el encabezado).
+    limite = limite_de_caducidad()
+    por_caducar = 0
+    for numero_fila, p in enumerate(partidas, start=2):
+        if p["fecha_caducidad"] < limite:
+            por_caducar += 1
+            for celda in hoja[numero_fila]:  # hoja[2] = todas las celdas de la fila 2
+                celda.fill = FONDO_POR_CADUCAR
+
+    # Nota debajo del total. El Excel es una "foto" del día en que se exporta:
+    # por eso se dice contra qué fecha se calculó el rojo.
+    nota = hoja[f"A{fila_total + 1}"]
+    lotes = "1 lote" if por_caducar == 1 else f"{por_caducar} lotes"
+    nota.value = (f"En rojo: {lotes} con menos de 1 año para caducar "
+                  f"(vencen antes del {fecha_para_mostrar(limite)}, "
+                  f"según la fecha en que se exportó este archivo).")
+    nota.font = CURSIVAS
 
 
 def hoja_comparacion(libro, mes):
@@ -129,7 +145,8 @@ def hoja_comparacion(libro, mes):
         color = COLORES_ESTADO.get(fila[0].value)  # None si es "Sin cambio"
         if color:
             for celda in fila:
-                celda.fill = PatternFill("solid", fgColor=color)
+                # Los colores vienen como "#dff3e4"; Excel los quiere sin el "#"
+                celda.fill = PatternFill("solid", fgColor=color.lstrip("#").upper())
 
     # La diferencia con signo: +7, -11, 0
     for numero_fila in range(2, fila_total + 1):

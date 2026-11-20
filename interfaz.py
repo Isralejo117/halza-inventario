@@ -15,7 +15,8 @@ from inventario import (ALMACENES, CARPETA_DATOS, DB_PATH, FECHA_NO_CADUCA, NO_C
                         obtener_partidas, obtener_producto, respaldar, respaldo_automatico)
 from exportar_excel import generar_excel
 from formato_fechas import activar_formato_fecha, activar_formato_mes
-from reporte import generar_reporte_pdf, nombre_mes
+from reporte import (COLORES_ESTADO, cantidad_o_guion, con_signo, generar_comparacion_pdf,
+                     generar_reporte_pdf, nombre_mes, resumen_comparacion)
 
 # Diccionario inverso: "Almacén Chico (Medicamentos)" -> "1"
 CLAVE_POR_NOMBRE = {nombre: clave for clave, nombre in ALMACENES.items()}
@@ -47,15 +48,6 @@ COLUMNAS_COMPARAR = (
     ("actual", "Actual", 65, "e"),
     ("diferencia", "Diferencia", 80, "e"),
 )
-
-# Estados de la comparación, en el orden del resumen, y el color de fondo de
-# su fila. "Sin cambio" no lleva color para que resalte lo que sí cambió.
-ESTADOS = ("Nuevo", "Ya no está", "Cambió", "Sin cambio")
-COLORES_ESTADO = {
-    "Nuevo": "#dff3e4",       # verde claro
-    "Ya no está": "#fde0e0",  # rojo claro
-    "Cambió": "#fff1c7",      # amarillo claro
-}
 
 # Consulta: fondo de las partidas con menos de un año para caducar (o ya caducadas)
 COLOR_POR_CADUCAR = "#f8caca"  # rojo claro
@@ -589,16 +581,6 @@ def hacer_respaldo_automatico():
     etiqueta_respaldo.configure(text=texto, text_color="gray40")
 
 
-def con_signo(numero):
-    """Para mostrar diferencias: 5 -> '+5', -3 -> '-3', 0 -> '0'."""
-    return f"{numero:+d}" if numero else "0"
-
-
-def cantidad_o_guion(cantidad):
-    """None (el lote no se registró ese mes) -> '—'. Un número se deja igual."""
-    return "—" if cantidad is None else cantidad
-
-
 def comparar():
     """Compara el mes escrito contra su mes anterior y llena la tabla de Comparar."""
     tabla_comparar.delete(*tabla_comparar.get_children())
@@ -638,23 +620,32 @@ def comparar():
             con_signo(lote["diferencia"]),
         ))
 
-    # Resumen: cuántos lotes hay de cada estado y cómo cambió la existencia total.
-    # Se cuentan TODOS los lotes, también los ocultos, para que el total cuadre.
-    partes = []
-    for estado in ESTADOS:
-        cantidad = sum(1 for lote in lotes if lote["estado"] == estado)
-        texto = f"{estado}: {cantidad}"
-        if ocultar_sin_cambio and estado == "Sin cambio":
-            texto += " (ocultos)"  # Avisa que existen aunque no se vean en la tabla
-        partes.append(texto)
-    total_antes = sum(lote["existencia_anterior"] or 0 for lote in lotes)
-    total_ahora = sum(lote["existencia_actual"] or 0 for lote in lotes)
+    # Resumen (el mismo que lleva el PDF): cuántos lotes hay de cada estado y
+    # cómo cambió la existencia total. Devuelve dos líneas.
+    linea_estados, linea_existencia = resumen_comparacion(lotes, ocultar_sin_cambio)
+    etiqueta_comparacion.configure(text=f"{linea_estados}\n{linea_existencia}",
+                                   text_color=COLOR_TEXTO)
 
-    etiqueta_comparacion.configure(
-        text="  |  ".join(partes)
-             + f"\nExistencia total: {total_antes} → {total_ahora} "
-               f"({con_signo(total_ahora - total_antes)})",
-        text_color=COLOR_TEXTO)
+
+def generar_pdf_comparacion():
+    """Pide dónde guardar el PDF de la comparación del mes escrito, lo genera y lo abre."""
+    try:
+        actual = normalizar_mes(entrada_comparar_mes.get())
+    except ValueError:
+        messagebox.showwarning("Falta el mes", "Escribe el mes a comparar (ej. 2026-11).")
+        return
+
+    anterior = mes_anterior(actual)
+    for mes in (actual, anterior):
+        if not obtener_partidas(mes):
+            messagebox.showinfo("Sin datos", f"No hay partidas registradas en {nombre_mes(mes)}; "
+                                             "no hay contra qué comparar.")
+            return
+
+    # El PDF respeta la casilla: si está marcada, tampoco imprime los "Sin cambio"
+    ocultar = casilla_ocultar.get() == 1
+    guardar_archivo(f"Comparacion_{actual}_contra_{anterior}", ".pdf", "Archivo PDF",
+                    lambda ruta: generar_comparacion_pdf(actual, ruta, ocultar))
 
 
 def al_cambiar_pestana():
@@ -865,8 +856,17 @@ tabla_comparar = crear_tabla_visual(pestana_comparar, COLUMNAS_COMPARAR)
 for estado, color in COLORES_ESTADO.items():
     tabla_comparar.tag_configure(estado, background=color)
 
-etiqueta_comparacion = ctk.CTkLabel(pestana_comparar, text="", justify="left")
-etiqueta_comparacion.pack(anchor="w", pady=(10, 0))
+# Fila inferior: resumen a la izquierda y botón del PDF a la derecha
+# (el botón se acomoda primero para que nunca se recorte, como en Consulta)
+pie_comparar = ctk.CTkFrame(pestana_comparar, fg_color="transparent")
+pie_comparar.pack(fill="x", pady=(10, 0))
+
+boton_pdf_comparar = ctk.CTkButton(pie_comparar, text="Generar PDF", width=140,
+                                   command=generar_pdf_comparacion)
+boton_pdf_comparar.pack(side="right")
+
+etiqueta_comparacion = ctk.CTkLabel(pie_comparar, text="", justify="left", anchor="w")
+etiqueta_comparacion.pack(side="left", fill="x", expand=True)
 
 # ------------------------------------------------------------------ Arranque
 

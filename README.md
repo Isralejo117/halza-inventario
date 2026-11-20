@@ -13,8 +13,8 @@ Proyecto de prácticas profesionales — Ingeniería en Tecnología de Software,
 - **Consulta** por mes: cada producto ocupa una fila con su existencia total; si tiene varios lotes, se despliega para ver cada lote con su caducidad y cantidad. Los lotes se pueden editar y eliminar.
 - **Aviso de caducidad**: en Consulta se marcan en rojo las partidas con menos de 1 año para caducar (algunas empresas no aceptan productos que caduquen antes).
 - **Comparación** lote por lote contra el mes anterior: lotes nuevos, que ya no están, que cambiaron o sin cambio.
-- **Reporte PDF** imprimible, separado por almacén, con subtotales y firmas.
-- **Exportación a Excel** con filtros, fechas reales y la hoja de comparación.
+- **Reporte PDF** imprimible, separado por almacén, con subtotales y firmas. También hay un **PDF de la comparación** contra el mes anterior, con los colores de cada estado.
+- **Exportación a Excel** con filtros, fechas reales, los lotes con menos de 1 año para caducar en rojo y la hoja de comparación.
 - **Respaldos**: botón de respaldo manual y respaldo automático diario (se conservan los últimos 30).
 
 ## Tecnologías
